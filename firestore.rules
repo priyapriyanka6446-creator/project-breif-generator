@@ -1,0 +1,166 @@
+/**
+ * Core Philosophy: This ruleset enforces a strict, user-centric security model.
+ * All data is organized under a user's unique ID (`/users/{userId}`), establishing
+ * path-based ownership as the default security posture. This ensures that by
+ * default, users can only access their own data.
+ *
+ * Data Structure: The data is hierarchically structured, starting with a top-level
+ * `/users` collection. Each user's data, including their projects, briefs, and
+ * other resources, is nested within their specific user document path.
+ * This organization naturally aligns with the security model.
+ *
+ * Key Security Decisions:
+ * - User Isolation: Users cannot list or access the data of other users unless
+ *   explicitly granted permission through a collaboration mechanism.
+ * - Collaborative Access: For shared resources like `/projects`, access is managed
+ *   via a denormalized `members` map on the document itself. Subcollections that
+ *   are part of a collaboration (e.g., `/briefs`, `/documents`) are expected to
+ *   carry a copy of this `members` map.
+ * - Inherited Access: For granular subcollections that don't store their own
+ *   permissions (e.g., `/versions`, `/conflicts`), rules use a `get()` call to
+ *   check the `members` map on the parent document (the brief). This is a
+ *   deliberate and limited use of `get()` for securing nested data trees.
+ * - Owner Supremacy: The original owner of a data tree (the user identified by
+ *   `{userId}` in the path) retains ultimate control, including the ability to
+ *   delete shared resources they own.
+ * - No Schema Validation: In this prototyping mode, rules focus solely on
+ *   authorization (who can access what) and do not validate the shape or data
+ *   types of documents, allowing for rapid iteration on the data model.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------------------
+    // Helper Functions
+    // ------------------------------------------------------------------------
+
+    /**
+     * Returns true if the user is authenticated.
+     */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    /**
+     * Returns true if the authenticated user's UID matches the provided userId.
+     * This is the foundation of the path-based ownership model.
+     */
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    /**
+     * Checks for ownership on an existing document. Used for safe updates/deletes.
+     */
+    function isExistingOwner(userId) {
+      return isOwner(userId) && resource != null;
+    }
+
+    /**
+     * Returns true if the authenticated user is a key in the document's `members` map.
+     * Assumes a `members` map exists on the document's data.
+     */
+    function isMember(doc) {
+      return isSignedIn() && request.auth.uid in doc.data.members;
+    }
+
+    /**
+     * Retrieves the parent brief document and checks if the current user is a member.
+     * This function is used to grant inherited access to subcollections like
+     * versions and conflicts, which don't have their own `members` map.
+     */
+    function isBriefMember(userId, projectId, briefId) {
+      let briefPath = /databases/$(database)/documents/users/$(userId)/projects/$(projectId)/briefs/$(briefId);
+      return isSignedIn() && isMember(get(briefPath));
+    }
+
+    // ------------------------------------------------------------------------
+    // Collection Rules
+    // ------------------------------------------------------------------------
+
+    /**
+     * @description Manages user profile documents.
+     * @path /users/{userId}
+     * @allow (create) An authenticated user can create their own user profile document.
+     * @deny (list) No user can list all documents in the `/users` collection.
+     * @principle Restricts access to a user's own data tree and prevents user enumeration.
+     */
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && request.resource.data.id == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
+      allow delete: if isExistingOwner(userId);
+
+      /**
+       * @description Stores user-owned projects, which can be shared with collaborators.
+       * @path /users/{userId}/projects/{projectId}
+       * @allow (get) An owner or a member listed in the project's `members` map can read the project.
+       * @deny (delete) A collaborator who is not the original owner cannot delete the project.
+       * @principle Enforces document ownership and shared access via a denormalized `members` map.
+       */
+      match /projects/{projectId} {
+        allow get: if isOwner(userId) || (resource != null && isMember(resource));
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isExistingOwner(userId) || (resource != null && isMember(resource));
+        allow delete: if isExistingOwner(userId);
+
+        /**
+         * @description Stores project briefs, which inherit access from the parent project.
+         * @path /users/{userId}/projects/{projectId}/briefs/{briefId}
+         * @allow (update) A user in the brief's `members` map can update it.
+         * @deny (create) A user who is not a member of the parent project cannot create a new brief.
+         * @principle Access is controlled by a denormalized `members` map on the brief document itself.
+         */
+        match /briefs/{briefId} {
+          allow get, update: if resource != null && isMember(resource);
+          allow list: if isMember(get(/databases/$(database)/documents/users/$(userId)/projects/$(projectId)));
+          allow create: if isMember(get(/databases/$(database)/documents/users/$(userId)/projects/$(projectId)));
+          allow delete: if isExistingOwner(userId);
+
+          /**
+           * @description Stores versions of a project brief.
+           * @path /users/{userId}/projects/{projectId}/briefs/{briefId}/versions/{versionId}
+           * @allow (get) A member of the parent brief can read a version document.
+           * @deny (delete) A brief member who is not the ultimate project owner cannot delete a version.
+           * @principle Access is inherited by checking membership on the parent brief document.
+           */
+          match /versions/{versionId} {
+            allow get, list, create: if isBriefMember(userId, projectId, briefId);
+            allow update: if resource != null && isBriefMember(userId, projectId, briefId);
+            allow delete: if isExistingOwner(userId);
+          }
+
+          /**
+           * @description Stores conflicts detected within a project brief.
+           * @path /users/{userId}/projects/{projectId}/briefs/{briefId}/conflicts/{conflictId}
+           * @allow (get) A member of the parent brief can read a conflict document.
+           * @deny (delete) A brief member who is not the ultimate project owner cannot delete a conflict.
+           * @principle Access is inherited by checking membership on the parent brief document.
+           */
+          match /conflicts/{conflictId} {
+            allow get, list, create: if isBriefMember(userId, projectId, briefId);
+            allow update: if resource != null && isBriefMember(userId, projectId, briefId);
+            allow delete: if isExistingOwner(userId);
+          }
+        }
+
+        /**
+         * @description Stores ingested documents related to a project.
+         * @path /users/{userId}/projects/{projectId}/documents/{documentId}
+         * @allow (update) A user in the document's `members` map can update it.
+         * @deny (create) A user who is not a member of the parent project cannot create a new document.
+         * @principle Access is controlled by a denormalized `members` map on the document itself.
+         */
+        match /documents/{documentId} {
+          allow get, update: if resource != null && isMember(resource);
+          allow list: if isMember(get(/databases/$(database)/documents/users/$(userId)/projects/$(projectId)));
+          allow create: if isMember(get(/databases/$(database)/documents/users/$(userId)/projects/$(projectId)));
+          allow delete: if isExistingOwner(userId);
+        }
+      }
+    }
+  }
+}

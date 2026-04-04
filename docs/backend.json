@@ -1,0 +1,185 @@
+{
+  "entities": {
+    "User": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "User",
+      "type": "object",
+      "description": "Represents a user within the Briefly application.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the User entity."
+        },
+        "email": {
+          "type": "string",
+          "description": "User's email address.",
+          "format": "email"
+        },
+        "firstName": {
+          "type": "string",
+          "description": "User's first name."
+        },
+        "lastName": {
+          "type": "string",
+          "description": "User's last name."
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "firstName",
+        "lastName"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}",
+        "definition": {
+          "entityName": "User",
+          "schema": {
+            "$ref": "#/backend/entities/User"
+          },
+          "description": "Stores user profiles. Path-based ownership ensures only the user can access their data.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/projects/{projectId}",
+        "definition": {
+          "entityName": "Project",
+          "schema": {
+            "$ref": "#/backend/entities/Project"
+          },
+          "description": "Stores project metadata. Includes denormalized 'members' map for authorization independence. Projects are owned by a user.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user (project owner)."
+            },
+            {
+              "name": "projectId",
+              "description": "The unique identifier for the project."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/projects/{projectId}/briefs/{briefId}",
+        "definition": {
+          "entityName": "Brief",
+          "schema": {
+            "$ref": "#/backend/entities/Brief"
+          },
+          "description": "Stores project briefs. Includes denormalized 'members' map copied from the parent project for authorization independence.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user (project owner)."
+            },
+            {
+              "name": "projectId",
+              "description": "The unique identifier for the project."
+            },
+            {
+              "name": "briefId",
+              "description": "The unique identifier for the project brief."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/projects/{projectId}/briefs/{briefId}/versions/{versionId}",
+        "definition": {
+          "entityName": "Version",
+          "schema": {
+            "$ref": "#/backend/entities/Version"
+          },
+          "description": "Stores versions of a project brief.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user (project owner)."
+            },
+            {
+              "name": "projectId",
+              "description": "The unique identifier for the project."
+            },
+            {
+              "name": "briefId",
+              "description": "The unique identifier for the project brief."
+            },
+            {
+              "name": "versionId",
+              "description": "The unique identifier for the version."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/projects/{projectId}/briefs/{briefId}/conflicts/{conflictId}",
+        "definition": {
+          "entityName": "Conflict",
+          "schema": {
+            "$ref": "#/backend/entities/Conflict"
+          },
+          "description": "Stores detected conflicts within a project brief.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user (project owner)."
+            },
+            {
+              "name": "projectId",
+              "description": "The unique identifier for the project."
+            },
+            {
+              "name": "briefId",
+              "description": "The unique identifier for the project brief."
+            },
+            {
+              "name": "conflictId",
+              "description": "The unique identifier for the conflict."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/projects/{projectId}/documents/{documentId}",
+        "definition": {
+          "entityName": "Document",
+          "schema": {
+            "$ref": "#/backend/entities/Document"
+          },
+          "description": "Stores ingested documents. Includes denormalized 'members' map copied from the parent project for authorization independence.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier for the user (project owner)."
+            },
+            {
+              "name": "projectId",
+              "description": "The unique identifier for the project."
+            },
+            {
+              "name": "documentId",
+              "description": "The unique identifier for the document."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The Firestore data structure is designed to support the 'Briefly' application, focusing on secure, scalable, and debuggable access to project briefs and related data.  The structure emphasizes Authorization Independence by denormalizing access control information, enabling atomic operations and simplifying security rules. Structural Segregation ensures that collections have a homogeneous security posture.  Access Modeling employs consistent patterns such as path-based ownership and membership maps for collaborative data. QAPs (Rules are not Filters) are supported by segregation, ensuring list operations are secure and efficient.\n\nSpecifically, user data is stored in `/users/{userId}`. Projects are owned by users and stored in `/users/{userId}/projects/{projectId}`. Project briefs and versions are located under the project path, with brief access controlled by project membership. Ingested documents are also stored under the project, inheriting access control. A membership map is used to manage roles within a project and avoid using `get()` calls in security rules.\n\nDenormalization is implemented by copying relevant authorization data (e.g., project members) into the project brief and ingested documents collections. This ensures that security rules can be evaluated without needing to read parent documents, promoting Authorization Independence. This is key for supporting QAPs, ensuring list operations remain secure and efficient, as rules do not act as filters.\n\nConflict resolution data and version histories are maintained as subcollections of project briefs, inheriting the brief's access control. This segregates data by access requirements, simplifying security rules."
+  }
+}
