@@ -1,7 +1,13 @@
 
 const https = require('https');
+const dotenv = require('dotenv');
+dotenv.config();
 
-const apiKey = 'AIzaSyAkFHC665VQTf-vQc5sqslWWCa2MZCPhGQ';
+const apiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
+if (!apiKey) {
+  console.error('No API key found in .env');
+  process.exit(1);
+}
 const data = JSON.stringify({
     contents: [{ parts: [{ text: 'hi' }] }]
 });
